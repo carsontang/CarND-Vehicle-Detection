@@ -1,59 +1,42 @@
-import numpy as np
-import cv2
-from skimage.feature import hog
 import glob
 import pickle
 import time
-import matplotlib.pyplot as plt
+from collections import deque
+
+import cv2
 import matplotlib.image as mpimg
-from sklearn.svm import LinearSVC
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from scipy.ndimage.measurements import label
+import matplotlib.pyplot as plt
+import numpy as np
 from moviepy.editor import VideoFileClip
+from scipy.ndimage.measurements import label
+from skimage.feature import hog
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import LinearSVC
 from tqdm import tqdm
 
 import global_settings
-from global_settings import *
-
-import numpy as np
-import cv2
 
 
-class HotWindows():
+class RingBuffer(object):
     """
-    Keep track of n previous hot windows
-    Compute cumulative heat map over time
-
-    self.windows is a queue of lists of bounding boxes,
-    where the list can be of arbitrary size.
-    Each element in the queue represents the list of
-    bounding boxes at a particular time frame.
+    Buffer N elements, each a list
     """
-    def __init__(self, n):
-        self.n = n
-        self.windows = []  # queue implemented as a list
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.buffer = deque()
 
-    def add_windows(self, new_windows):
-        """
-        Push new windows to queue
-        Pop from queue if full
-        """
-        self.windows.append(new_windows)
+    def add(self, a_list):
+        self.buffer.append(a_list)
 
-        q_full = len(self.windows) >= self.n
-        if q_full:
-            _ = self.windows.pop(0)
+        if len(self.buffer) >= self.capacity:
+            self.buffer.popleft()
 
-    def get_windows(self):
-        """
-        Concatenate all lists in the queue and return as
-        one big list
-        """
-        out_windows = []
-        for window in self.windows:
-            out_windows = out_windows + window
-        return out_windows
+    def get_all_lists(self):
+        results = []
+        for element in self.buffer:
+            results = results + element
+        return results
 
 def get_hog_features(img, orient, pix_per_cell, cell_per_block, vis=False, feature_vec=True):
     if vis:
@@ -146,18 +129,18 @@ def single_img_features(img, color_space='RGB', spatial_size=(32, 32),
     return np.concatenate(features)
 
 def train(cars, notcars, svc, X_scaler):
-    car_features = extract_features(cars, color_space=color_space,
-                                    spatial_size=spatial_size, hist_bins=hist_bins,
-                                    orient=orient, pix_per_cell=pix_per_cell,
-                                    cell_per_block=cell_per_block,
-                                    hog_channel=hog_channel, use_spatial_feat=use_spatial_feat,
-                                    use_hist_feat=use_hist_feat, use_hog_feat=use_hog_feat)
-    notcar_features = extract_features(notcars, color_space=color_space,
-                                       spatial_size=spatial_size, hist_bins=hist_bins,
-                                       orient=orient, pix_per_cell=pix_per_cell,
-                                       cell_per_block=cell_per_block,
-                                       hog_channel=hog_channel, use_spatial_feat=use_spatial_feat,
-                                       use_hist_feat=use_hist_feat, use_hog_feat=use_hog_feat)
+    car_features = extract_features(cars, color_space=global_settings.color_space,
+                                    spatial_size=global_settings.spatial_size, hist_bins=global_settings.hist_bins,
+                                    orient=global_settings.orient, pix_per_cell=global_settings.pix_per_cell,
+                                    cell_per_block=global_settings.cell_per_block,
+                                    hog_channel=global_settings.hog_channel, use_spatial_feat=global_settings.use_spatial_feat,
+                                    use_hist_feat=global_settings.use_hist_feat, use_hog_feat=global_settings.use_hog_feat)
+    notcar_features = extract_features(notcars, color_space=global_settings.color_space,
+                                       spatial_size=global_settings.spatial_size, hist_bins=global_settings.hist_bins,
+                                       orient=global_settings.orient, pix_per_cell=global_settings.pix_per_cell,
+                                       cell_per_block=global_settings.cell_per_block,
+                                       hog_channel=global_settings.hog_channel, use_spatial_feat=global_settings.use_spatial_feat,
+                                       use_hist_feat=global_settings.use_hist_feat, use_hog_feat=global_settings.use_hog_feat)
 
     X = np.vstack((car_features, notcar_features, notcar_features, notcar_features)).astype(np.float64)
     X_scaler.fit(X)
@@ -172,9 +155,12 @@ def train(cars, notcars, svc, X_scaler):
     X_train, X_test, y_train, y_test = train_test_split(
         scaled_X, y, test_size=0.05, random_state=rand_state)
 
-    print('Using:',orient,'orientations',pix_per_cell,
-        'pixels per cell and', cell_per_block,'cells per block')
+    print('Settings: orient=%(orient)d, pix_per_cell=%(pix_per_cell)d, cell_per_block=%(cell_per_block)d'
+          % { 'orient': global_settings.orient,
+              'pix_per_cell': global_settings.pix_per_cell,
+              'cell_per_block': global_settings.cell_per_block})
     print('Feature vector length:', len(X_train[0]))
+
     # Check the training time for the SVC
     t=time.time()
     svc.fit(X_train, y_train)
@@ -282,7 +268,6 @@ def apply_threshold(heatmap, threshold):
     return heatmap
 
 
-# not done
 def draw_labeled_bboxes(img, labels):
     # Iterate through all detected cars
     for car_number in range(1, labels[1]+1):
@@ -297,40 +282,6 @@ def draw_labeled_bboxes(img, labels):
         cv2.rectangle(img, bbox[0], bbox[1], (0,0,255), 6)
     # Return the image
     return img
-# def draw_labeled_bboxes(img, labels):
-#     # Iterate through all detected cars
-#     for car_number in range(1, labels[1]+1):
-#         # Find pixels with each car_number label value
-#         nonzero = (labels[0] == car_number).nonzero()
-#
-#         # Identify x and y values of those pixels
-#         nonzeroy = np.array(nonzero[0])
-#         nonzerox = np.array(nonzero[1])
-#
-#         # Define a bounding box based on min/max x and y
-#         bbox = ((np.min(nonzerox), np.min(nonzeroy)), (np.max(nonzerox), np.max(nonzeroy)))
-#         bbox_width = (bbox[1][0] - bbox[0][0])
-#         bbox_height = (bbox[1][1] - bbox[0][1])
-#
-#         # Use the ratio of width : height to filter out thin bounding boxes
-#         ratio = bbox_width / bbox_height
-#
-#         # Also if small box "close" to the car (i.e. bounding box y location is high),
-#         # then probaby not a car
-#         bbox_area = bbox_width * bbox_height
-#
-#         if bbox_area < small_bbox_area and bbox[0][1] > close_y_thresh:
-#             small_box_close = True
-#         else:
-#             small_box_close = False
-#
-#         # Combine above filters with minimum bbox area filter
-#         if ratio > min_ar and ratio < max_ar and not small_box_close and bbox_area > min_bbox_area:
-#             # Draw the box on the image
-#             cv2.rectangle(img, bbox[0], bbox[1], (0,0,255), 6)
-#
-#     # Return the image
-#     return img
 
 def numpyify(pattern):
     arrs = []
@@ -339,11 +290,11 @@ def numpyify(pattern):
         arrs.append(img)
     return arrs
 
-def run_windows():
+def demo_windows():
     svc = LinearSVC()
     X_scaler = StandardScaler()
 
-    if global_settings.use_pretrained:
+    if global_settings.use_pretrained_model:
         print("Using pretrained model...")
         with open('model.p', 'rb') as f:
             d = pickle.load(f)
@@ -362,76 +313,61 @@ def run_windows():
         with open('model.p', 'wb') as f:
             pickle.dump({'svc': svc, 'X_scaler': X_scaler}, f)
 
-    # Display predictions on all test_images
     image_file = glob.glob('test_images/*.jpg')[0]
-    # for image_file in glob.glob('test_images/*.jpg'):
     image = mpimg.imread(image_file)
     draw_image = np.copy(image)
 
-    windows = slide_window(image, x_start_stop=(100, 1180), y_start_stop=(400, 500),
-                           xy_window=(96, 96), xy_overlap=(pct_overlap, pct_overlap))
+    windows = slide_window(image, x_start_stop=(100, 1200), y_start_stop=(400, 600),
+                           xy_window=(96, 96), xy_overlap=(global_settings.pct_overlap, global_settings.pct_overlap))
 
-    hot_windows = search_windows(image, windows, svc, X_scaler, color_space=color_space,
-                                 spatial_size=spatial_size, hist_bins=hist_bins,
-                                 orient=orient, pix_per_cell=pix_per_cell,
-                                 cell_per_block=cell_per_block,
-                                 hog_channel=hog_channel, spatial_feat=global_settings.use_spatial_feat,
+    bboxes = search_windows(image, windows, svc, X_scaler, color_space=global_settings.color_space,
+                                 spatial_size=global_settings.spatial_size, hist_bins=global_settings.hist_bins,
+                                 orient=global_settings.orient, pix_per_cell=global_settings.pix_per_cell,
+                                 cell_per_block=global_settings.cell_per_block,
+                                 hog_channel=global_settings.hog_channel, spatial_feat=global_settings.use_spatial_feat,
                                  hist_feat=global_settings.use_hist_feat, hog_feat=global_settings.use_hog_feat)
 
-    window_img = draw_boxes(draw_image, hot_windows, color=(0, 0, 255), thick=6)
+    multiwindowed_img = draw_boxes(draw_image, bboxes, color=(0, 0, 255), thick=6)
 
-    plt.imshow(window_img)
+    plt.imshow(multiwindowed_img)
     plt.show()
 
-    # Calculate and draw heat map
-    heatmap = np.zeros((720, 1280))  # NOTE: Image dimensions hard-coded
-    heatmap = add_heat(heatmap, hot_windows)
+    heatmap = np.zeros(image.shape[:2])
+    heatmap = add_heat(heatmap, bboxes)
     heatmap = apply_threshold(heatmap, 1)
     labels = label(heatmap)
     plt.imshow(labels[0], cmap='gray')
     plt.show()
 
-    # Draw final bounding boxes
     draw_img = draw_labeled_bboxes(np.copy(image), labels)
     plt.imshow(draw_img)
     plt.show()
 
-hot_windows = HotWindows(num_frames)
+window_buffer = RingBuffer(global_settings.ring_buffer_cap)
 svc = LinearSVC()
 X_scaler = StandardScaler()
 
-# MoviePy video annotation will call this function
 def annotate_image(image):
-    """
-    Annotate the input image with detection boxes
-    Returns annotated image
-    """
-    global hot_windows, svc, X_scaler
+    global window_buffer, svc, X_scaler
 
-    draw_image = np.copy(image)
+    windows = slide_window(image, x_start_stop=(100, 1200), y_start_stop=(400, 600),
+                        xy_window=(96, 96), xy_overlap=(global_settings.pct_overlap, global_settings.pct_overlap))
 
-    windows = slide_window(image, x_start_stop=(100, 1180), y_start_stop=(400, 500),
-                        xy_window=(96, 96), xy_overlap=(pct_overlap, pct_overlap))
+    new_windows = search_windows(image, windows, svc, X_scaler, color_space=global_settings.color_space,
+                                     spatial_size=global_settings.spatial_size, hist_bins=global_settings.hist_bins,
+                                     orient=global_settings.orient, pix_per_cell=global_settings.pix_per_cell,
+                                     cell_per_block=global_settings.cell_per_block,
+                                     hog_channel=global_settings.hog_channel, spatial_feat=global_settings.use_spatial_feat,
+                                     hist_feat=global_settings.use_hist_feat, hog_feat=global_settings.use_hog_feat)
 
-    new_hot_windows = search_windows(image, windows, svc, X_scaler, color_space=color_space,
-                                     spatial_size=spatial_size, hist_bins=hist_bins,
-                                     orient=orient, pix_per_cell=pix_per_cell,
-                                     cell_per_block=cell_per_block,
-                                     hog_channel=hog_channel, spatial_feat=use_spatial_feat,
-                                     hist_feat=use_hist_feat, hog_feat=use_hog_feat)
-
-    # DEBUG
-    window_img = draw_boxes(draw_image, new_hot_windows, color=(0, 0, 255), thick=6)
-    #return window_img
-
-    # Add new hot windows to HotWindows queue
-    hot_windows.add_windows(new_hot_windows)
-    all_hot_windows = hot_windows.get_windows()
+    # Add new windows to ring buffer
+    window_buffer.add(new_windows)
+    buffer_windows = window_buffer.get_all_lists()
 
     # Calculate and draw heat map
-    heatmap = np.zeros((720, 1280))  # NOTE: Image dimensions hard-coded
-    heatmap = add_heat(heatmap, all_hot_windows)
-    heatmap = apply_threshold(heatmap, heatmap_thresh)
+    heatmap = np.zeros(image.shape[:2])
+    heatmap = add_heat(heatmap, buffer_windows)
+    heatmap = apply_threshold(heatmap, global_settings.heatmap_threshold)
     labels = label(heatmap)
 
     # Draw final bounding boxes
@@ -440,14 +376,12 @@ def annotate_image(image):
     return draw_img
 
 def annotate_video(input_file, output_file):
-    """ Given input_file video, save annotated video to output_file """
-    global hot_windows, svc, X_scaler
+    global window_buffer, svc, X_scaler
 
     with open('model.p', 'rb') as f:
         save_dict = pickle.load(f)
     svc = save_dict['svc']
     X_scaler = save_dict['X_scaler']
-
     print('Loaded pre-trained model from model.p')
 
     video = VideoFileClip(input_file)
@@ -455,5 +389,4 @@ def annotate_video(input_file, output_file):
     annotated_video.write_videofile(output_file, audio=False)
 
 if __name__ == '__main__':
-    # run_windows()
-    annotate_video('project_video.mp4', 'out_thresh30.mp4')
+    annotate_video('project_video.mp4', 'output.mp4')
